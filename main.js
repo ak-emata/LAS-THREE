@@ -11,6 +11,10 @@ import {
   tap,
   share,
   asyncScheduler,
+  combineLatest,
+  animationFrameScheduler,
+  forkJoin,
+  zip,
 } from "rxjs";
 
 import {
@@ -22,6 +26,9 @@ import {
   skipWhile,
   skip,
   takeWhile,
+  combineLatestWith,
+  bufferTime,
+  map,
 } from "rxjs/operators";
 
 let scene, camera, renderer, controls;
@@ -63,41 +70,18 @@ function render() {
   requestAnimationFrame(render);
 }
 
-// let observer = new Observable(function subscribe(subscriber) {
-//   while (filesLoaded < maxFiles) {
-//     subscriber.next(filesLoaded++);
-//   }
-//   subscriber.complete();
-// });
-
 async function getData(fileNumber) {
-  let headers = new Headers();
-
-  headers.append("Content-Type", "application/json");
-  headers.append("Accept", "application/json");
-  headers.append("Origin", "http://localhost:3000");
-
-  const response = await fetch("http://localhost:3000/puntos/" + fileNumber, {
+  await fetch("http://localhost:3000/puntos/" + fileNumber, {
     method: "GET",
-    headers: headers,
+    headers: [
+      ["Content-Type", "application/json"],
+      ["Accept", "application/json"],
+      ["Origin", "http://localhost:3000"],
+    ],
   })
     .then((response) => response.json())
     .then((response) => {
-      let object;
       let mergedGeometry = geoLoader.parse(response);
-
-      for (let obj of objects) {
-        if (obj.name === "puntos") {
-          object = obj;
-        }
-      }
-
-      if (object === undefined) {
-        object = new THREE.Object3D();
-        objects.push(object);
-        object.name = "puntos";
-        scene.add(object);
-      }
 
       let mat = new THREE.PointsMaterial({
         size: 0.7,
@@ -110,44 +94,69 @@ async function getData(fileNumber) {
       // GeometryCompressionUtils.compressPositions(chunk);
       // GeometryCompressionUtils.compressNormals(chunk, "ANGLES");
       // GeometryCompressionUtils.compressUvs(chunk);
-
-      object.add(chunk);
-      object.updateMatrix();
-
-      let boundingBox = new THREE.Box3().setFromObject(object);
-      const vec = new Vector3();
-      boundingBox.getCenter(vec);
-
-      camera.position.x = vec.x;
-      camera.position.y = vec.y;
-      camera.position.z = vec.z + 300;
+      addToObject(chunk);
     });
 }
 
+function addToObject(chunk) {
+  let object;
+
+  for (let obj of objects) {
+    if (obj.name === "puntos") {
+      object = obj;
+    }
+  }
+
+  if (object === undefined) {
+    object = new THREE.Object3D();
+    objects.push(object);
+    object.name = "puntos";
+    scene.add(object);
+  }
+
+  object.add(chunk);
+  object.updateMatrix();
+
+  let boundingBox = new THREE.Box3().setFromObject(object);
+  const vec = new Vector3();
+  boundingBox.getCenter(vec);
+
+  camera.position.x = vec.x;
+  camera.position.y = vec.y;
+  camera.position.z = vec.z + 350;
+}
+let zipped;
 function generateObservables(amountOfObservables) {
   let amountPerObservable = maxFiles / amountOfObservables;
 
-  for (let i = 0; i < amountOfObservables; i++) {
-    let observer = interval(0.01).pipe(
-      tap((x) => console.log(i + " is processing: " + x)),
-
-      skip(filesLoaded),
-      takeWhile(
-        (val) => val < filesLoaded + amountPerObservable && val < maxFiles,
-        false
-      ),
+  let rangeObs = (start, end, i) =>
+    interval(0).pipe(
+      skip(start),
+      takeWhile((x) => x <= end && x < maxFiles),
       observeOn(asyncScheduler)
+      // tap((x) => console.log(i + " is processing: " + x))
     );
 
-    // let observer = range(filesLoaded, filesLoaded + amountPerObservable).pipe(
-    //   observeOn(asyncScheduler)
-    // );
+  let subs = {
+    next: (v) => v.forEach((chunk) => getData(chunk)),
+    error: (e) => console.error(e),
+    complete: () => zipped.unsubscribe(),
+  };
+
+  let obs = [];
+
+  for (let i = 0; i < amountOfObservables; i++) {
+    obs.push(rangeObs(filesLoaded, filesLoaded + amountPerObservable, i));
+
     filesLoaded += amountPerObservable;
-    observer.subscribe({
-      next: (v) => getData(v),
-      error: (e) => console.error(e),
-      complete: () => console.info(i + " finished"),
-    });
   }
+
+  zipped = zip(obs)
+    .pipe(
+      // map((observables) => [ob1, ob2, ob3, ob4]),
+      observeOn(animationFrameScheduler)
+    )
+    .subscribe(subs);
 }
+
 generateObservables(4);
