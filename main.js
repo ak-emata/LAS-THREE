@@ -15,6 +15,8 @@ import {
   animationFrameScheduler,
   forkJoin,
   zip,
+  merge,
+  from,
 } from "rxjs";
 
 import {
@@ -29,13 +31,20 @@ import {
   combineLatestWith,
   bufferTime,
   map,
+  mergeMap,
+  mergeAll,
+  combineLatestAll,
+  mergeWith,
+  zipAll,
 } from "rxjs/operators";
+
+import { ajax } from "rxjs/ajax";
 
 let scene, camera, renderer, controls;
 let objects = [];
 
 const geoLoader = new BufferGeometryLoader();
-let filesLoaded = 0;
+let filesLoaded = 1;
 let maxFiles = 0;
 await fetch("http://localhost:3000/puntos")
   .then((response) => response.json())
@@ -70,32 +79,29 @@ function render() {
   requestAnimationFrame(render);
 }
 
-async function getData(fileNumber) {
-  await fetch("http://localhost:3000/puntos/" + fileNumber, {
+function getJson(fileNumber) {
+  // debugger;
+  return ajax.getJSON("http://localhost:3000/puntos/" + fileNumber, {
     method: "GET",
     headers: [
       ["Content-Type", "application/json"],
       ["Accept", "application/json"],
       ["Origin", "http://localhost:3000"],
     ],
-  })
-    .then((response) => response.json())
-    .then((response) => {
-      let mergedGeometry = geoLoader.parse(response);
+  });
+}
 
-      let mat = new THREE.PointsMaterial({
-        size: 0.7,
-        vertexColors: true,
-        transparent: true,
-      });
+function getChunk(json) {
+  // debugger;
+  let mergedGeometry = geoLoader.parse(json);
 
-      let chunk = new THREE.Points(mergedGeometry, mat);
+  let mat = new THREE.PointsMaterial({
+    size: 0.7,
+    vertexColors: true,
+    transparent: true,
+  });
 
-      // GeometryCompressionUtils.compressPositions(chunk);
-      // GeometryCompressionUtils.compressNormals(chunk, "ANGLES");
-      // GeometryCompressionUtils.compressUvs(chunk);
-      addToObject(chunk);
-    });
+  return new THREE.Points(mergedGeometry, mat);
 }
 
 function addToObject(chunk) {
@@ -125,38 +131,71 @@ function addToObject(chunk) {
   camera.position.y = vec.y;
   camera.position.z = vec.z + 350;
 }
-let zipped;
-function generateObservables(amountOfObservables) {
-  let amountPerObservable = maxFiles / amountOfObservables;
 
+let zipped;
+
+function findAmoutOfObservables() {
+  let fileAmount = maxFiles - filesLoaded;
+  let amountOfObservables = 10;
+
+  while (
+    Math.trunc(fileAmount / amountOfObservables) !=
+    fileAmount / amountOfObservables
+  ) {
+    amountOfObservables--;
+  }
+  return amountOfObservables;
+}
+
+function generateObservables() {
   let rangeObs = (start, end, i) =>
     interval(0).pipe(
       skip(start),
-      takeWhile((x) => x <= end && x < maxFiles),
-      observeOn(asyncScheduler)
+      takeWhile((x) => x <= end && x <= maxFiles),
+      observeOn(animationFrameScheduler)
+
       // tap((x) => console.log(i + " is processing: " + x))
     );
 
   let subs = {
-    next: (v) => v.forEach((chunk) => getData(chunk)),
+    next: (chunk) => addToObject(chunk),
     error: (e) => console.error(e),
     complete: () => zipped.unsubscribe(),
   };
+  let count = 0;
+  let counts = {
+    next: (chunk) => count++,
+    error: (e) => console.error(e),
+
+    complete: () => console.log(count),
+  };
+
+  let logs = {
+    next: (v) => console.log(v),
+    error: (e) => console.error(e),
+    complete: () => console.log("me cago en todo"),
+  };
 
   let obs = [];
-
+  let amountOfObservables = findAmoutOfObservables();
+  let amountPerObservable = (maxFiles - filesLoaded) / amountOfObservables;
   for (let i = 0; i < amountOfObservables; i++) {
     obs.push(rangeObs(filesLoaded, filesLoaded + amountPerObservable, i));
 
     filesLoaded += amountPerObservable;
   }
+  combineLatestAll;
 
   zipped = zip(obs)
     .pipe(
-      // map((observables) => [ob1, ob2, ob3, ob4]),
+      mergeMap((x) => from(x)),
+      mergeMap((fileNumber) => getJson(fileNumber)),
+      map((json) => getChunk(json)),
       observeOn(animationFrameScheduler)
     )
+    // .subscribe(logs);
+    // .subscribe(counts);
     .subscribe(subs);
 }
 
-generateObservables(4);
+generateObservables();
